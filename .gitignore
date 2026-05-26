@@ -110,6 +110,22 @@ coverage/
 # Symbols
 app.*.symbols
 
+# Dart pub
+.dart_tool/
+.packages
+.pub/
+pubspec.lock
+
+# Release script (keep but don't execute automatically)
+/release.sh
+
+# Build outputs
+android/.gradle/
+android/app/build/
+ios/.generated/
+ios/Pods/
+build/
+
 # Exceptions to above rules.
 !**/ios/**/default.mode1v3
 !**/ios/**/default.mode2v3
