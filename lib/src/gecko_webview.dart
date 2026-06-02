@@ -74,12 +74,26 @@ class _GeckoWebviewState extends State<GeckoWebview> {
     _isDisposed = true;
 
     // 清理通信接口
-    _communication?.shutdown();
-    _communication?.dispose();
+    try {
+      _communication?.shutdown().catchError((e) {
+        print('[NyaNyaWebViewLog-Flutter] Error during communication shutdown: $e');
+      });
+    } catch (e) {
+      print('[NyaNyaWebViewLog-Flutter] Error during communication shutdown: $e');
+    }
+    try {
+      _communication?.dispose();
+    } catch (e) {
+      print('[NyaNyaWebViewLog-Flutter] Error during communication dispose: $e');
+    }
     _communication = null;
 
     // 清理 MethodChannel
-    _channel?.setMethodCallHandler(null);
+    try {
+      _channel?.setMethodCallHandler(null);
+    } catch (e) {
+      print('[NyaNyaWebViewLog-Flutter] Error clearing method handler: $e');
+    }
     _channel = null;
 
     super.dispose();

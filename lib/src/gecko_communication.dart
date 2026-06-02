@@ -98,19 +98,19 @@ class GeckoCommunication implements IWebViewCommunication {
 
   @override
   Future<void> shutdown() async {
-    // GeckoView 关闭 GeckoRuntime，清空引用，释放内存
+    // GeckoView 关闭通道，清空引用，释放内存
+    // 注意：不关闭 GeckoRuntime，因为它是全局共享的
+    // 关闭单个标签页不应影响其他标签页或下次打开
     try {
-      await _channel.invokeMethod('shutdownGeckoRuntime');
+      _channel.setMethodCallHandler(null);
     } catch (e) {
-      print('[GeckoCommunication] Error shutting down GeckoRuntime: $e');
+      print('[GeckoCommunication] Error clearing method handler during shutdown: $e');
     }
-    _channel.setMethodCallHandler(null);
     _messageHandler = null;
   }
 
   @override
   void dispose() {
-    _channel.setMethodCallHandler(null);
     _messageHandler = null;
   }
 }

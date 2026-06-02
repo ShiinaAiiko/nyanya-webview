@@ -362,10 +362,25 @@ class _NyaNyaWebviewState extends State<NyaNyaWebview>
     print(
         '[NyaNyaWebViewLog-Flutter] NyaNyaWebview.dispose CALLED! this.hashCode=${identityHashCode(this)}, _channel=$_channel');
     _isDisposed = true;
+    // 注意：对于 GeckoWebview，channel 的清理由 GeckoWebview.dispose() 负责
+    // 这里只清理 communication 和其他资源，避免重复清理 channel
     _communication?.dispose();
     _communication = null;
-    _channel?.setMethodCallHandler(null);
-    _channel?.invokeMethod('dispose');
+    // 对于 Gecko 引擎，不清理 channel，让子组件 GeckoWebview 负责
+    if (widget.options.engine != WebViewEngine.gecko) {
+      try {
+        _channel?.setMethodCallHandler(null);
+      } catch (e) {
+        print('[NyaNyaWebViewLog-Flutter] Error clearing method handler during dispose: $e');
+      }
+      try {
+        _channel?.invokeMethod('dispose').catchError((e) {
+          print('[NyaNyaWebViewLog-Flutter] Error invoking dispose method: $e');
+        });
+      } catch (e) {
+        print('[NyaNyaWebViewLog-Flutter] Error invoking dispose method: $e');
+      }
+    }
     _channel = null;
     super.dispose();
   }
