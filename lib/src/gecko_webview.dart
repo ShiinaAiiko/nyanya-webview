@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
+import 'package:file_picker/file_picker.dart';
 import 'webview_options.dart';
 import 'gecko_communication.dart';
 import 'webview_communication_interface.dart';
@@ -272,6 +273,17 @@ class _GeckoWebviewState extends State<GeckoWebview> {
                 '[NyaNyaWebViewLog-Flutter] GeckoWebview: WARNING - onClose is null, cannot close tab');
           }
           return {'status': 'ok'};
+        case 'onFilePicker':
+          print(
+              '[NyaNyaWebViewLog-Flutter] GeckoWebview: onFilePicker received from native! args=${call.arguments}');
+          final mimeTypesFromArgs = call.arguments['mimeTypes'] as List<dynamic>?;
+          final allowMultipleFromArgs = call.arguments['allowMultiple'] as bool? ?? false;
+          final List<String> mimeTypes = mimeTypesFromArgs?.map((e) => e as String).toList() ?? [];
+          final bool allowMultiple = allowMultipleFromArgs;
+          print(
+              '[NyaNyaWebViewLog-Flutter] GeckoWebview: onFilePicker parsed, mimeTypes=$mimeTypes, allowMultiple=$allowMultiple');
+          await _handleFilePicker(mimeTypes, allowMultiple);
+          return {'status': 'ok'};
         default:
           print(
               '[NyaNyaWebViewLog-Flutter] GeckoWebview: Unknown method called: ${call.method}');
@@ -299,5 +311,64 @@ class _GeckoWebviewState extends State<GeckoWebview> {
       }
     }
     await _channel?.invokeMethod('loadUrl', {'url': url});
+  }
+
+  Future<void> _handleFilePicker(List<String> mimeTypes, bool allowMultiple) async {
+    print(
+        '[NyaNyaWebViewLog-Flutter] _handleFilePicker called, mimeTypes=$mimeTypes, allowMultiple=$allowMultiple');
+    
+    try {
+      FileType fileType = FileType.any;
+      List<String>? allowedExtensions;
+      
+      // 根据 mimeTypes 确定文件类型
+      if (mimeTypes.isNotEmpty) {
+        if (mimeTypes.any((type) => type.startsWith('image/'))) {
+          fileType = FileType.image;
+        } else if (mimeTypes.any((type) => type.startsWith('video/'))) {
+          fileType = FileType.video;
+        } else if (mimeTypes.any((type) => type.startsWith('audio/'))) {
+          fileType = FileType.audio;
+        } else {
+          // 提取扩展名
+          allowedExtensions = mimeTypes
+              .where((type) => !type.contains('*') && type.contains('.'))
+              .map((type) => type.split('.').last)
+              .toList();
+        }
+      }
+      
+      print(
+          '[NyaNyaWebViewLog-Flutter] fileType=$fileType, allowedExtensions=$allowedExtensions');
+      
+      FilePickerResult? result = await FilePicker.platform.pickFiles(
+        type: fileType,
+        allowedExtensions: allowedExtensions,
+        allowMultiple: allowMultiple,
+        withData: false,
+        withReadStream: false,
+      );
+      
+      if (result != null && result.paths.isNotEmpty) {
+        final List<String> paths = result.paths
+            .whereType<String>()
+            .toList();
+        final List<String> uris = paths.map((path) => Uri.file(path).toString()).toList();
+        
+        print(
+            '[NyaNyaWebViewLog-Flutter] Selected files, paths=$paths, uris=$uris');
+        
+        await _channel?.invokeMethod('onFilesSelected', {'uris': uris});
+      } else {
+        print('[NyaNyaWebViewLog-Flutter] No file selected');
+        await _channel?.invokeMethod('onFilePickerDismissed');
+      }
+    } catch (e, stack) {
+      print(
+          '[NyaNyaWebViewLog-Flutter] ========== ERROR IN _handleFilePicker ==========');
+      print('[NyaNyaWebViewLog-Flutter] Error: $e');
+      print('[NyaNyaWebViewLog-Flutter] Stack: $stack');
+      await _channel?.invokeMethod('onFilePickerDismissed');
+    }
   }
 }

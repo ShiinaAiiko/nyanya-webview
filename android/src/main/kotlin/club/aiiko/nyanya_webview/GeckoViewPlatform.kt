@@ -2,7 +2,9 @@ package club.aiiko.nyanya_webview
 
 import android.Manifest
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -21,6 +23,8 @@ import org.mozilla.geckoview.GeckoRuntimeSettings
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoSessionSettings
 import org.mozilla.geckoview.GeckoView
+import java.io.File
+import java.io.FileOutputStream
 
 data class TabSession(
     val session: GeckoSession,
@@ -38,8 +42,150 @@ class TabManager(
     private var serverPort: Int = 8080,
     private var sessionId: String? = null
 ) {
+    private var pendingFilePrompt: GeckoSession.PromptDelegate.FilePrompt? = null
+    private var activity: android.app.Activity? = null
+    private var pendingMimeTypes: Array<out String>? = null
+    private var pendingAllowMultiple: Boolean = false
+    private var pendingGeckoResult: GeckoResult<GeckoSession.PromptDelegate.PromptResponse>? = null
+    
     companion object {
         private const val TAG = "TabManager"
+        private const val REQUEST_CODE_PICK_FILE = 1001
+    }
+    
+    fun updateActivity(activity: android.app.Activity?) {
+        this.activity = activity
+    }
+    
+    fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (requestCode == REQUEST_CODE_PICK_FILE) {
+            val prompt = pendingFilePrompt ?: run {
+                Log.w("NyaNyaWebViewLog-Native", "onActivityResult called but no pending file prompt")
+                return
+            }
+            val geckoResult = pendingGeckoResult ?: run {
+                Log.w("NyaNyaWebViewLog-Native", "onActivityResult called but no pending gecko result")
+                return
+            }
+            
+            if (resultCode == android.app.Activity.RESULT_OK && data != null) {
+                val sourceUris = mutableListOf<android.net.Uri>()
+                data.clipData?.let { clipData ->
+                    for (i in 0 until clipData.itemCount) {
+                        sourceUris.add(clipData.getItemAt(i).uri)
+                    }
+                } ?: run {
+                    data.data?.let { sourceUris.add(it) }
+                }
+                
+                if (sourceUris.isNotEmpty()) {
+                    Log.d("NyaNyaWebViewLog-Native", "Selected ${sourceUris.size} files, converting to temp files with correct names")
+                    
+                    val tempUris = mutableListOf<android.net.Uri>()
+                    val contextToUse = activity ?: context
+                    
+                    try {
+                        val tempDir = File(contextToUse.cacheDir, "gecko_temp_files")
+                        if (!tempDir.exists()) {
+                            tempDir.mkdirs()
+                        }
+                        
+                        for ((index, sourceUri) in sourceUris.withIndex()) {
+                            try {
+                                // 获取原始文件名
+                                var fileName = "temp_${System.currentTimeMillis()}_$index"
+                                try {
+                                    val cursor = contextToUse.contentResolver.query(sourceUri, null, null, null, null)
+                                    cursor?.use {
+                                        if (it.moveToFirst()) {
+                                            val nameIndex = it.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                                            if (nameIndex >= 0) {
+                                                val displayName = it.getString(nameIndex)
+                                                if (displayName != null && displayName.isNotEmpty()) {
+                                                    fileName = displayName
+                                                }
+                                            }
+                                        }
+                                    }
+                                } catch (e: Exception) {
+                                    Log.w("NyaNyaWebViewLog-Native", "Failed to get original filename", e)
+                                }
+                                
+                                val tempFile = File(tempDir, fileName)
+                                
+                                // 复制文件到临时目录
+                                contextToUse.contentResolver.openInputStream(sourceUri)?.use { input ->
+                                    FileOutputStream(tempFile).use { output ->
+                                        input.copyTo(output)
+                                    }
+                                }
+                                
+                                // 设置权限
+                                tempFile.setReadable(true, false)
+                                
+                                val fileUri = Uri.fromFile(tempFile)
+                                tempUris.add(fileUri)
+                                Log.d("NyaNyaWebViewLog-Native", "Created temp file: $fileUri (${tempFile.length()} bytes)")
+                            } catch (e: Exception) {
+                                Log.e("NyaNyaWebViewLog-Native", "Failed to process file", e)
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.e("NyaNyaWebViewLog-Native", "Error processing files", e)
+                    }
+                    
+                    if (tempUris.isNotEmpty()) {
+                        Log.d("NyaNyaWebViewLog-Native", "Confirming with ${tempUris.size} temp files via GeckoResult")
+                        val response = prompt.confirm(contextToUse, tempUris.toTypedArray())
+                        geckoResult.complete(response)
+                    } else {
+                        Log.w("NyaNyaWebViewLog-Native", "No temp files created, dismissing")
+                        val response = prompt.dismiss()
+                        geckoResult.complete(response)
+                    }
+                } else {
+                    val response = prompt.dismiss()
+                    geckoResult.complete(response)
+                }
+            } else {
+                val response = prompt.dismiss()
+                geckoResult.complete(response)
+            }
+            pendingFilePrompt = null
+            pendingMimeTypes = null
+            pendingAllowMultiple = false
+            pendingGeckoResult = null
+        }
+    }
+    
+    private fun startFilePicker() {
+        val currentActivity = activity ?: run {
+            Log.e("NyaNyaWebViewLog-Native", "No activity available, cannot start file picker")
+            pendingFilePrompt?.dismiss()
+            pendingFilePrompt = null
+            pendingMimeTypes = null
+            pendingAllowMultiple = false
+            return
+        }
+        
+        Log.d("NyaNyaWebViewLog-Native", "Starting file picker, mimeTypes=${pendingMimeTypes?.joinToString()}, allowMultiple=$pendingAllowMultiple")
+        
+        val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            // 添加权限标志
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            
+            if (pendingMimeTypes != null && pendingMimeTypes!!.isNotEmpty()) {
+                putExtra(Intent.EXTRA_MIME_TYPES, pendingMimeTypes)
+            }
+            
+            if (pendingAllowMultiple && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.JELLY_BEAN_MR2) {
+                putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+            }
+        }
+        
+        currentActivity.startActivityForResult(intent, REQUEST_CODE_PICK_FILE)
     }
 
     val tabStack = mutableListOf<TabSession>()
@@ -221,6 +367,32 @@ class TabManager(
             return false
         }
     }
+    
+    fun onFilesSelected(uris: List<String>) {
+        Log.d("NyaNyaWebViewLog-Native", "onFilesSelected called, uris=$uris")
+        pendingFilePrompt?.let { prompt ->
+            if (uris.isNotEmpty()) {
+                val parsedUris: Array<android.net.Uri> = uris.map { uriStr ->
+                    android.net.Uri.parse(uriStr)
+                }.toTypedArray()
+                Log.d("NyaNyaWebViewLog-Native", "Parsed uris: ${parsedUris.joinToString()}")
+                val response = prompt.confirm(context, parsedUris)
+                Log.d("NyaNyaWebViewLog-Native", "File prompt confirmed with ${parsedUris.size} files")
+            } else {
+                val response = prompt.dismiss()
+                Log.d("NyaNyaWebViewLog-Native", "File prompt dismissed")
+            }
+            pendingFilePrompt = null
+        }
+    }
+    
+    fun onFilePickerDismissed() {
+        Log.d("NyaNyaWebViewLog-Native", "onFilePickerDismissed called")
+        pendingFilePrompt?.let { prompt ->
+            val response = prompt.dismiss()
+            pendingFilePrompt = null
+        }
+    }
 
     fun setupSession(session: GeckoSession, port: Int) {
         this.serverPort = port
@@ -332,6 +504,22 @@ class TabManager(
                     return GeckoResult.fromValue(prompt.confirm(""))
                 }
                 return null
+            }
+
+            override fun onFilePrompt(session: GeckoSession, prompt: GeckoSession.PromptDelegate.FilePrompt): GeckoResult<GeckoSession.PromptDelegate.PromptResponse>? {
+                Log.d("NyaNyaWebViewLog-Native", "onFilePrompt called, mimeTypes=${prompt.mimeTypes?.joinToString() ?: ""}, type=${prompt.type}, capture=${prompt.capture}")
+                
+                val geckoResult = GeckoResult<GeckoSession.PromptDelegate.PromptResponse>()
+                pendingFilePrompt = prompt
+                pendingMimeTypes = prompt.mimeTypes
+                pendingAllowMultiple = prompt.type == GeckoSession.PromptDelegate.FilePrompt.Type.MULTIPLE
+                pendingGeckoResult = geckoResult
+                
+                Handler(Looper.getMainLooper()).post {
+                    startFilePicker()
+                }
+                
+                return geckoResult
             }
         }
 
@@ -507,7 +695,8 @@ class GeckoViewPlatform(
     private val context: Context,
     messenger: BinaryMessenger,
     id: Int,
-    creationParams: Map<String, Any>?
+    creationParams: Map<String, Any>?,
+    private val plugin: NyanyaWebviewPlugin
 ) : PlatformView, MethodChannel.MethodCallHandler {
 
     private val TAG = "GeckoViewPlatform"
@@ -668,7 +857,20 @@ class GeckoViewPlatform(
             }
         }
         
+        // 注册到 plugin
+        plugin.registerGeckoViewPlatform(this)
+        
         Log.d("NyaNyaWebViewLog-Native", "GeckoViewPlatform.init COMPLETED successfully!")
+    }
+
+    fun updateActivity(activity: android.app.Activity?) {
+        Log.d("NyaNyaWebViewLog-Native", "GeckoViewPlatform.updateActivity called with: $activity")
+        tabManager.updateActivity(activity)
+    }
+
+    fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        Log.d("NyaNyaWebViewLog-Native", "GeckoViewPlatform.onActivityResult called")
+        tabManager.onActivityResult(requestCode, resultCode, data)
     }
 
     override fun getView(): View {
@@ -681,6 +883,7 @@ class GeckoViewPlatform(
             currentSession.close()
         }
         methodChannel.setMethodCallHandler(null)
+        plugin.unregisterGeckoViewPlatform(this)
     }
 
     private var lastGeolocationCallback: String? = null
@@ -917,6 +1120,18 @@ class GeckoViewPlatform(
                     Log.e("NyaNyaWebViewLog-Native", "Error checking GeckoView readiness", e)
                     result.success(false)
                 }
+            }
+            "onFilesSelected" -> {
+                @Suppress("UNCHECKED_CAST")
+                val uris = call.argument<List<String>>("uris") ?: emptyList()
+                Log.d("NyaNyaWebViewLog-Native", "onFilesSelected received, uris=$uris")
+                tabManager.onFilesSelected(uris)
+                result.success(null)
+            }
+            "onFilePickerDismissed" -> {
+                Log.d("NyaNyaWebViewLog-Native", "onFilePickerDismissed received")
+                tabManager.onFilePickerDismissed()
+                result.success(null)
             }
             else -> result.notImplemented()
         }

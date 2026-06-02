@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:webview_flutter/webview_flutter.dart';
+import 'package:webview_flutter_android/webview_flutter_android.dart';
 import 'webview_options.dart';
 import 'system_communication.dart';
 import 'webview_communication_interface.dart';
@@ -97,16 +99,14 @@ class _SystemWebviewState extends State<SystemWebview> {
           onNavigationRequest: (NavigationRequest request) {
             final url = request.url;
             print(
-                '[NyaNyaWebViewLog] SystemWebview: onNavigationRequest, url=$url');
+                '[NyaNyaWebViewLog] SystemWebview: onNavigationRequest, url=$url, isMainFrame=${request.isMainFrame}');
 
-            if (_currentOptions.newTabBehavior == NewTabBehavior.delegate &&
+            // 只有是主框架（非 iframe）且满足其他条件时，我们才处理
+            if (request.isMainFrame &&
+                _currentOptions.newTabBehavior == NewTabBehavior.delegate &&
                 widget.onOpenUrl != null &&
                 !url.startsWith('javascript:') &&
                 !url.startsWith('http://127.0.0.1:')) {
-              // 判断是否是新窗口请求（通过目标或用户交互判断）
-              // 对于 webview_flutter，新窗口通常通过 request.isMainFrame 判断
-              // 或者通过用户的点击行为判断
-              // 这里我们假设所有外部链接都当作新窗口处理
               print(
                   '[NyaNyaWebViewLog] SystemWebview: Delegating navigation to onOpenUrl');
               widget.onOpenUrl!(url, '_blank');
@@ -125,11 +125,13 @@ class _SystemWebviewState extends State<SystemWebview> {
         onMessageReceived: (JavaScriptMessage message) {
           print(
               '[NyaNyaWebViewLog] SystemWebview: Received message from JS: ${message.message}');
-          // 同时转发给通信接口和原始处理器
           _communication?.handleMessageFromWeb(message.message);
           widget.messageHandler(message.message);
         },
       );
+
+    // 设置 WebView 配置
+    _configureWebView();
 
     // 创建通信接口
     _communication = SystemCommunication(
@@ -141,10 +143,50 @@ class _SystemWebviewState extends State<SystemWebview> {
     // 加载初始 URL
     _controller.loadRequest(Uri.parse(widget.options.initialUrl));
 
-    // 通知 Flutter 层 channel 已创建（保持向后兼容）
+    // 通知 Flutter 层 channel 已创建
     widget.onChannelCreated?.call(_controller);
-    // 通知通信接口已创建
     widget.onCommunicationCreated?.call(_communication!);
+  }
+
+  void _configureWebView() {
+    // 通用 WebView 设置
+    _controller.enableZoom(true);
+    
+    // 设置 Android 文件选择回调
+    if (WebViewPlatform.instance is AndroidWebViewPlatform) {
+      final AndroidWebViewController androidController =
+          _controller.platform as AndroidWebViewController;
+      androidController.setOnShowFileSelector(_androidFilePicker);
+      print('[NyaNyaWebViewLog] SystemWebview: File picker registered');
+    }
+    
+    print('[NyaNyaWebViewLog] SystemWebview: WebView configured');
+  }
+
+  Future<List<String>> _androidFilePicker(FileSelectorParams params) async {
+    print('[NyaNyaWebViewLog] SystemWebview: File picker called, acceptTypes=${params.acceptTypes}');
+    
+    try {
+      const platform = MethodChannel('nyanya_webview');
+      final List<dynamic>? result = await platform.invokeMethod(
+        'pickFilesForSystemWebView',
+        {
+          'mimeTypes': params.acceptTypes,
+          'allowMultiple': params.mode == FileSelectorMode.openMultiple,
+        },
+      );
+      
+      if (result != null && result.isNotEmpty) {
+        final List<String> uris = result.cast<String>();
+        print('[NyaNyaWebViewLog] SystemWebview: Selected files, uris=$uris');
+        return uris;
+      }
+    } catch (e) {
+      print('[NyaNyaWebViewLog] SystemWebview: Error picking files: $e');
+    }
+    
+    print('[NyaNyaWebViewLog] SystemWebview: No file selected');
+    return [];
   }
 
   Future<void> _injectFlutterBridge() async {

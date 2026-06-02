@@ -8,6 +8,7 @@ Flutter WebView 包装库，支持 GeckoView 和系统 WebView 双引擎切换�
 - **标签页管理** - 内置多标签页浏览功能
 - **JavaScript Bridge** - Flutter ↔ WebView 双向通信
 - **新页面拦截** - 自动处理 `window.open` 和 `_blank` 链接
+- **文件选择支持** - 完整支持 `<input type="file">` 文件上传，无文件副本问题
 - **URL 规则替换** - 通过正则配置域名映射
 - **国际化支持** - 内置 zh-CN / zh-TW / en-US
 - **灵活配置** - 支持多种 WebView 选项和自定义行为
@@ -135,6 +136,20 @@ WebViewOptions(
 - `replace` - 在当前 WebView 中加载
 - `delegate` - 委托给 Flutter 层处理（推荐）
 
+### 文件选择支持
+
+`nyanya_webview` 完整支持 HTML `<input type="file">` 文件上传功能：
+
+**特性**：
+- ✅ **双引擎支持** - GeckoView 和系统 WebView 都支持文件选择
+- ✅ **无文件副本** - 不会在相册/图库中产生文件副本
+- ✅ **多文件选择** - 支持 `multiple` 属性
+- ✅ **MIME 类型过滤** - 支持 `accept` 属性
+
+**实现说明**：
+- **SystemWebView**：使用原生 Android `Intent.ACTION_GET_CONTENT`，直接返回 `content://` URI
+- **GeckoView**：将文件复制到应用内部缓存目录，使用 `file://` URI，避免权限问题
+
 ## 通信接口
 
 ```dart
@@ -192,11 +207,17 @@ nyanya_webview/
 │       ├── webview_options.dart     # 配置选项
 │       ├── webview_controller.dart  # 控制器
 │       ├── webview_communication_interface.dart  # 通信接口
+│       ├── gecko_webview.dart       # GeckoView 实现
+│       ├── system_webview.dart      # 系统 WebView 实现
 │       └── tab_manager/             # 标签页管理
 │           ├── tab_manager.dart
 │           ├── tab_page.dart
 │           └── tab_manager_widget.dart
 └── android/                         # Android 原生实现
+    └── src/main/kotlin/club/aiiko/nyanya_webview/
+        ├── NyanyaWebviewPlugin.kt   # Flutter 插件入口
+        ├── GeckoViewPlatform.kt     # GeckoView 核心实现
+        └── GeckoViewWrapper.kt      # GeckoView 包装类
 ```
 
 ## 相关文档
